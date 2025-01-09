@@ -1,0 +1,670 @@
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+library(broom)
+library(AICcmodavg)
+library(openxlsx)
+library(rstatix)   # For non-parametric tests
+library(dunn.test) # For the Dunn test (post hoc test)
+library(FSA)
+library(tidyr)
+library(dplyr)
+library(ggsignif)
+
+# set the memory limit to 8 gigabytes (you can adjust this value as needed)
+setwd("/Users/thirtyforty/Desktop/ThirtyFourtyDocker/ls_metrics_allstat/GN_hexagon_stat/")
+
+# Define the names of the sheets to read
+sheet_names <- c("forest_loss", "abandoned_land", "imperviousness", "roads", "bgi_fragmentation", "cumulative")
+
+# Read in the data from each sheet and store it in a list
+impacts_regions_results <- lapply(sheet_names, function(sheet_name) {
+  read.xlsx("/Users/thirtyforty/Desktop/ThirtyFourtyDocker/ls_metrics_allstat/GN_hexagon_stat/hexagon_by_regions_gi.xlsx", sheet = sheet_name)
+})
+
+# Name each element of the list after the sheet it corresponds to
+names(impacts_regions_results) <- sheet_names
+
+# Define the impacts list
+impacts_list <- list(
+  forest_loss = "for_c_norm",
+  abandoned_land = "ab_c_norm",
+  imperviousness = "imp_c_norm",
+  roads = "road_f_nor",
+  bgi_fragmentation = "frag_norm",
+  cumulative = "cum_norm"
+)
+
+# Read the Excel file containing the data
+file_path <- "/Users/thirtyforty/Desktop/ThirtyFourtyDocker/ls_metrics_allstat/GN_hexagon_stat/hexagon_by_regions_gi.xlsx"
+forest_loss_data <- read.xlsx(file_path, sheet = "forest_loss")
+
+# Check the structure of the loaded data
+str(forest_loss_data)
+# Access the "for_c_norm" column from the "forest_loss_data" dataframe
+forest_loss_column <- forest_loss_data[["for_c_norm"]]
+
+# Verify the structure and summary of the "for_c_norm" data
+str(forest_loss_column)
+summary(forest_loss_column)
+
+# Group the data by county and calculate the median of normalized forest loss for each group
+median_forest_loss_by_county <- forest_loss_data %>%
+  group_by(county) %>%
+  summarise(median_for_c_norm = median(for_c_norm, na.rm = TRUE))
+# Print the median forest loss by county to the console
+print(median_forest_loss_by_county)
+
+# Change the x-axis labels by removing the word "maakond" from the end of each region name 
+forest_loss_data$county <- gsub(" maakond", "", forest_loss_data$county)
+
+#Update the Median Values Dataset
+median_forest_loss_by_county$county <- gsub(" maakond", "", median_forest_loss_by_county$county)
+
+# Create the forest loss boxplot with median values annotated
+ggplot(forest_loss_data, aes(x = county, y = for_c_norm)) +
+  geom_boxplot(fill = "#FF9999", outlier.shape = NA, alpha = 0.7) +
+  geom_text(data = median_forest_loss_by_county, aes(label = median_for_c_norm, y = median_for_c_norm, group = county), 
+            position = position_dodge(width = 0.75), vjust = -0.5, size = 3) +
+  labs(x = "Regions", y = "Normalised Forest Cover Loss", title = "Comparison of Normalised Forest Cover Loss by Region") +
+  theme_minimal() +
+  coord_cartesian(ylim = c(0, 0.12)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Create a histogram to visualize the distribution of "for_c_norm" data
+ggplot(forest_loss_data, aes(x = for_c_norm)) +
+  geom_histogram(binwidth = 0.02, fill = "skyblue", color = "black") +
+  labs(x = "Forest Cover Loss (for_c_norm)", y = "Frequency") +
+  ggtitle("Distribution of Forest Cover Loss") +
+  xlim(0, 0.25) +
+  ylim(0, 4000)
+
+# Perform the Kruskal-Wallis test
+forest_kruskal_test_result <- kruskal_test(for_c_norm ~ county, data = forest_loss_data)
+print(forest_kruskal_test_result)
+
+# Convert the 'county' variable to a factor
+forest_loss_data$county <- factor(forest_loss_data$county)
+
+# Conduct the Dunn test (post hoc analysis) with Bonferroni correction
+forest_posthoc_dunn_result <- dunnTest(forest_loss_data$for_c_norm, forest_loss_data$county, method = "bonferroni")
+print(forest_posthoc_dunn_result)
+summary(forest_posthoc_dunn_result)
+
+# Create plot_forest_data with the necessary columns
+plot_forest_data <- data.frame(
+  Comparison = forest_posthoc_dunn_result$res$Comparison,
+  z_score = forest_posthoc_dunn_result$res$Z,
+  p_adj = forest_posthoc_dunn_result$res$P.adj
+)
+
+# Split the 'Comparison' column and add significance indicators
+plot_forest_data <- plot_forest_data %>%
+  separate(Comparison, into = c("Region1", "Region2"), sep = " - ") %>%
+  mutate(
+    significance = case_when(
+      p_adj < 0.05 & z_score > 0  ~ "Significant Positive",
+      p_adj < 0.05 & z_score < 0  ~ "Significant Negative",
+      TRUE                        ~ "Not Significant"
+    ),
+    significance_label = case_when(
+      p_adj < 0.001 ~ "***",
+      p_adj < 0.01  ~ "**",
+      p_adj < 0.05  ~ "*",
+      TRUE          ~ ""
+    )
+  )
+
+# Create a new column for the absolute value of z_score for significant points
+plot_forest_data$abs_z_score <- with(plot_forest_data, ifelse(significance != "Not Significant", abs(z_score), NA))
+
+# Add significance_color column
+plot_forest_data <- plot_forest_data %>%
+  mutate(significance_color = case_when(
+    p_adj < 0.001 ~ "Highly Significant",
+    p_adj < 0.01  ~ "Moderately Significant",
+    p_adj < 0.05  ~ "Significant",
+    TRUE          ~ "Not Significant"
+  ))
+# Modify the Region1 and Region2 Columns: Applying gsub to these columns to remove the "maakond" suffix.
+plot_forest_data$Region1 <- gsub(" maakond", "", plot_forest_data$Region1)
+plot_forest_data$Region2 <- gsub(" maakond", "", plot_forest_data$Region2)
+
+# Creating a heatmap
+ggplot(plot_forest_data, aes(x = Region2, y = Region1)) +
+  geom_tile(aes(fill = abs_z_score), color = "white", alpha = 0.3) +
+  scale_fill_gradient(low = "lightblue", high = "darkred", na.value = "white", guide = "none") +
+  geom_text(aes(label = paste0(sprintf("%.2f", z_score), significance_label)), color = "black", size = 3) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_text(angle = 45, hjust = 1)) +
+  labs(
+    title = "Z-Scores Heatmap of Forest Cover Loss",
+    caption = "Color Scheme: Z-Score Intensity\n\nP-Values Legend:\n* <- 0.05\n** <- 0.01\n*** <- below 0.01"
+  )
+
+# Read the Excel file containing the abandonment data
+file_path <- "/Users/thirtyforty/Desktop/ThirtyFourtyDocker/ls_metrics_allstat/GN_hexagon_stat/hexagon_by_regions_gi.xlsx"
+aband_data <- read.xlsx(file_path, sheet = "abandoned_land")
+
+# Check the structure of the loaded data
+str(aband_data)
+
+# Access and summarize the "ab_c_norm" column
+aband_column <- aband_data[["ab_c_norm"]]
+str(aband_column)
+summary(aband_column)
+
+
+# Group the abandonment data by county and calculate the median of normalized abandoned land for each group
+median_aband_by_county <- aband_data %>%
+  group_by(county) %>%
+  summarise(median_ab_c_norm = median(ab_c_norm, na.rm = TRUE))
+
+# Print the median abandoned land by county to the console
+print(median_aband_by_county)
+
+# Remove 'maakond' from the county names in aband_data
+aband_data$county <- gsub(" maakond", "", aband_data$county)
+
+# Update the median_aband_by_county dataset if it contains county names
+median_aband_by_county$county <- gsub(" maakond", "", median_aband_by_county$county)
+
+# Create the boxplot for abandonment data with median values annotated
+ggplot(aband_data, aes(x = county, y = ab_c_norm)) +
+  geom_boxplot(fill = "#FF9999", outlier.shape = NA, alpha = 0.7) +  # Set a uniform light red color
+  geom_text(data = median_aband_by_county, aes(label = median_ab_c_norm, y = median_ab_c_norm, group = county), 
+            position = position_dodge(width = 0.75), vjust = -0.5, size = 3) +
+  labs(x = "Regions", y = "Normalised Abandoned Land",
+       title = "Comparison of Normalised Abandoned Land by Region") +
+  theme_minimal() +
+  coord_cartesian(ylim = c(0, 0.12)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")  # Rotating x-axis labels and removing the legend
+
+# Create a histogram for abandonment data
+ggplot(aband_data, aes(x = ab_c_norm)) +
+  geom_histogram(binwidth = 0.02, fill = "skyblue", color = "black") +
+  labs(x = "Abandoned Land (ab_c_norm)", y = "Frequency") +
+  ggtitle("Distribution of Abandoned Land") +
+  xlim(0, 0.25) +
+  ylim(0, 4000)
+
+# Perform the Kruskal-Wallis test for abandonment data
+aband_kruskal_test_result <- kruskal_test(ab_c_norm ~ county, data = aband_data)
+print(aband_kruskal_test_result)
+
+# Convert the 'county' variable to a factor if it's not already
+aband_data$county <- factor(aband_data$county)
+
+# Conduct the Dunn test (post hoc analysis) with Bonferroni correction for abandonment data
+aband_posthoc_dunn_result <- dunnTest(aband_data$ab_c_norm, aband_data$county, method = "bonferroni")
+print(aband_posthoc_dunn_result)
+summary(aband_posthoc_dunn_result)
+
+# Prepare data for heatmap
+plot_aband_data <- data.frame(
+  Comparison = aband_posthoc_dunn_result$res$Comparison,
+  z_score = aband_posthoc_dunn_result$res$Z,
+  p_adj = aband_posthoc_dunn_result$res$P.adj
+)
+
+# Process data for heatmap
+plot_aband_data <- plot_aband_data %>%
+  separate(Comparison, into = c("Region1", "Region2"), sep = " - ") %>%
+  mutate(
+    significance = case_when(
+      p_adj < 0.05 & z_score > 0  ~ "Significant Positive",
+      p_adj < 0.05 & z_score < 0  ~ "Significant Negative",
+      TRUE                        ~ "Not Significant"
+    ),
+    significance_label = case_when(
+      p_adj < 0.001 ~ "***",
+      p_adj < 0.01  ~ "**",
+      p_adj < 0.05  ~ "*",
+      TRUE          ~ ""
+    ),
+    abs_z_score = ifelse(significance != "Not Significant", abs(z_score), NA)
+  )
+
+# Modify the Region1 and Region2 Columns
+plot_aband_data$Region1 <- gsub(" maakond", "", plot_aband_data$Region1)
+plot_aband_data$Region2 <- gsub(" maakond", "", plot_aband_data$Region2)
+
+# Heatmap for abandonment data
+ggplot(plot_aband_data, aes(x = Region2, y = Region1)) +
+  geom_tile(aes(fill = abs_z_score), color = "white", alpha = 0.3) +
+  scale_fill_gradient(low = "lightblue", high = "darkred", na.value = "white", guide = "none") +
+  geom_text(aes(label = paste0(sprintf("%.2f", z_score), significance_label)), color = "black", size = 3) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_text(angle = 45, hjust = 1)) +
+  labs(
+    title = "Z-Scores Heatmap of Abandoned Land",
+    caption = "Color Scheme: Z-Score Intensity\n\nP-Values Legend:\n* <- 0.05\n** <- 0.01\n*** <- below 0.01"
+  )
+
+# Read the Excel file containing the imperviousness data
+file_path <- "/Users/thirtyforty/Desktop/ThirtyFourtyDocker/ls_metrics_allstat/GN_hexagon_stat/hexagon_by_regions_gi.xlsx"
+imp_data <- read.xlsx(file_path, sheet = "imperviousness")
+
+# Check the structure of the loaded data
+str(imp_data)
+
+# Access and summarize the key column (assuming it's something like "imp_c_norm" for normalized imperviousness)
+# Replace "imp_c_norm" with the actual column name
+imp_column <- imp_data[["imp_c_norm"]]
+str(imp_column)
+summary(imp_column)
+
+# Group the imperviousness data by county and calculate the median of normalized imperviousness for each group
+median_imp_by_county <- imp_data %>%
+  group_by(county) %>%
+  summarise(median_imp_c_norm = median(imp_c_norm, na.rm = TRUE))
+
+# Print the median imperviousness by county to the console
+print(median_imp_by_county)
+
+# Remove 'maakond' from County Names
+imp_data$county <- gsub(" maakond", "", imp_data$county)
+median_imp_by_county$county <- gsub(" maakond", "", median_imp_by_county$county)
+
+# Create the boxplot for imperviousness data with median values annotated
+ggplot(imp_data, aes(x = county, y = imp_c_norm)) +
+  geom_boxplot(fill = "#FF9999", outlier.shape = NA, alpha = 0.7) +  # Light red fill with opacity
+  geom_text(data = median_imp_by_county, aes(label = median_imp_c_norm, y = median_imp_c_norm, group = county), 
+            position = position_dodge(width = 0.75), vjust = -0.5, size = 3) +
+  labs(x = "County", y = "Normalised Imperviousness",
+       title = "Comparison of Normalised Imperviousness by Region") +
+  theme_minimal() +
+  coord_cartesian(ylim = c(0, 0.12)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")  # Rotating x-axis labels and removing the legend
+
+
+# Create a histogram for imperviousness data
+ggplot(imp_data, aes(x = imp_c_norm)) +
+  geom_histogram(binwidth = 0.02, fill = "skyblue", color = "black") +
+  labs(x = "Imperviousness (imp_c_norm)", y = "Frequency") +
+  ggtitle("Distribution of Imperviousness") +
+  xlim(0, 0.25) +
+  ylim(0, 20)
+
+# Perform the Kruskal-Wallis test for imperviousness data
+imp_kruskal_test_result <- kruskal_test(imp_c_norm ~ county, data = imp_data)
+print(imp_kruskal_test_result)
+
+# Convert the 'county' variable to a factor
+imp_data$county <- factor(imp_data$county)
+
+# Conduct the Dunn test (post hoc analysis) with Bonferroni correction for imperviousness data
+imp_posthoc_dunn_result <- dunnTest(imp_data$imp_c_norm, imp_data$county, method = "bonferroni")
+print(imp_posthoc_dunn_result)
+summary(imp_posthoc_dunn_result)
+
+# Prepare data for heatmap
+plot_imp_data <- data.frame(
+  Comparison = imp_posthoc_dunn_result$res$Comparison,
+  z_score = imp_posthoc_dunn_result$res$Z,
+  p_adj = imp_posthoc_dunn_result$res$P.adj
+)
+
+# Process data for heatmap
+plot_imp_data <- plot_imp_data %>%
+  separate(Comparison, into = c("Region1", "Region2"), sep = " - ") %>%
+  mutate(
+    significance = case_when(
+      p_adj < 0.05 & z_score > 0  ~ "Significant Positive",
+      p_adj < 0.05 & z_score < 0  ~ "Significant Negative",
+      TRUE                        ~ "Not Significant"
+    ),
+    significance_label = case_when(
+      p_adj < 0.001 ~ "***",
+      p_adj < 0.01  ~ "**",
+      p_adj < 0.05  ~ "*",
+      TRUE          ~ ""
+    ),
+    abs_z_score = ifelse(significance != "Not Significant", abs(z_score), NA)
+  )
+
+# Modify the Region1 and Region2 Columns
+plot_imp_data$Region1 <- gsub(" maakond", "", plot_imp_data$Region1)
+plot_imp_data$Region2 <- gsub(" maakond", "", plot_imp_data$Region2)
+
+# Heatmap for imperviousness data
+ggplot(plot_imp_data, aes(x = Region2, y = Region1)) +
+  geom_tile(aes(fill = abs_z_score), color = "white", alpha = 0.5) +
+  scale_fill_gradient(low = "lightblue", high = "darkred", na.value = "white", guide = "none") +
+  geom_text(aes(label = paste0(sprintf("%.2f", z_score), significance_label)), color = "black", size = 3) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_text(angle = 45, hjust = 1)) +
+  labs(
+    title = "Z-Scores Heatmap of Imperviousness",
+    caption = "Color Scheme: Z-Score Intensity\n\nP-Values Legend:\n* <- 0.05\n** <- 0.01\n*** <- below 0.01"
+  )
+
+# Read the Excel file containing the roads (GI Fragmentation) data
+file_path <- "/Users/thirtyforty/Desktop/ThirtyFourtyDocker/ls_metrics_allstat/GN_hexagon_stat/hexagon_by_regions_gi.xlsx"
+roads_data <- read.xlsx(file_path, sheet = "roads")
+
+# Check the structure of the loaded data
+str(roads_data)
+
+# Access and summarize the GI Fragmentation column 
+gi_frag_column <- roads_data[["road_f_nor"]]
+str(gi_frag_column)
+summary(gi_frag_column)
+
+# Calculate and print the median GI Fragmentation by county
+median_gi_frag_by_county <- roads_data %>%
+  group_by(county) %>%
+  summarise(median_gi_frag = median(road_f_nor, na.rm = TRUE))
+print(median_gi_frag_by_county)
+
+# Remove maakond from the name of the region
+roads_data$county <- gsub(" maakond", "", roads_data$county)
+median_gi_frag_by_county$county <- gsub(" maakond", "", median_gi_frag_by_county$county)
+
+# Create a boxplot with median values annotated
+ggplot(roads_data, aes(x = county, y = road_f_nor)) +
+  geom_boxplot(fill = "#FF9999", outlier.shape = NA, alpha = 0.7) +  # Light red fill with opacity
+  geom_text(data = median_gi_frag_by_county, aes(label = median_gi_frag, y = median_gi_frag, group = county), 
+            position = position_dodge(width = 0.75), vjust = -0.5, size = 3) +
+  labs(x = "Regions", y = "GI Fragmentation",
+       title = "Comparison of GI Fragmentation by Road Network by County") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")  # Rotating x-axis labels and removing the legend
+
+
+# Create a histogram for GI Fragmentation data
+ggplot(roads_data, aes(x = road_f_nor)) +
+  geom_histogram(binwidth = 0.02, fill = "skyblue", color = "black") +
+  labs(x = "GI Fragmentation", y = "Frequency") +
+  ggtitle("Distribution of GI Fragmentation by Road Network") +
+  coord_cartesian(xlim = c(0, 0.15), ylim = c(0, 20000)) +
+  theme_minimal()
+
+
+# Perform the Kruskal-Wallis test
+gi_kruskal_test_result <- kruskal_test(road_f_nor ~ county, data = roads_data)
+print(gi_kruskal_test_result)
+
+# Convert the 'county' variable to a factor
+roads_data$county <- factor(roads_data$county)
+
+# Conduct the Dunn test (post hoc analysis) with Bonferroni correction
+gi_posthoc_dunn_result <- dunnTest(roads_data$road_f_nor, roads_data$county, method = "bonferroni")
+print(gi_posthoc_dunn_result)
+summary(gi_posthoc_dunn_result)
+
+# Prepare data for heatmap
+plot_gi_data <- data.frame(
+  Comparison = gi_posthoc_dunn_result$res$Comparison,
+  z_score = gi_posthoc_dunn_result$res$Z,
+  p_adj = gi_posthoc_dunn_result$res$P.adj
+)
+
+# Process data for heatmap
+plot_gi_data <- plot_gi_data %>%
+  separate(Comparison, into = c("Region1", "Region2"), sep = " - ") %>%
+  mutate(
+    significance = case_when(
+      p_adj < 0.05 & z_score > 0  ~ "Significant Positive",
+      p_adj < 0.05 & z_score < 0  ~ "Significant Negative",
+      TRUE                        ~ "Not Significant"
+    ),
+    significance_label = case_when(
+      p_adj < 0.001 ~ "***",
+      p_adj < 0.01  ~ "**",
+      p_adj < 0.05  ~ "*",
+      TRUE          ~ ""
+    ),
+    abs_z_score = ifelse(significance != "Not Significant", abs(z_score), NA)
+  )
+
+# Modify the Region1 and Region2 Columns
+plot_gi_data$Region1 <- gsub(" maakond", "", plot_gi_data$Region1)
+plot_gi_data$Region2 <- gsub(" maakond", "", plot_gi_data$Region2)
+
+# Create heatmap for GI Fragmentation data
+ggplot(plot_gi_data, aes(x = Region2, y = Region1)) +
+  geom_tile(aes(fill = abs_z_score), color = "white", alpha = 0.5) +
+  scale_fill_gradient(low = "lightblue", high = "darkred", na.value = "white", guide = "none") +
+  geom_text(aes(label = paste0(sprintf("%.2f", z_score), significance_label)), color = "black", size = 3) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_text(angle = 45, hjust = 1)) +
+  labs(
+    title = "Z-Scores Heatmap of GI Fragmentation by Road Network",
+    caption = "Color Scheme: Z-Score Intensity\n\nP-Values Legend:\n* <- 0.05\n** <- 0.01\n*** <- below 0.01"
+  )
+# Read the Excel file containing the BGI Fragmentation data
+file_path <- "/Users/thirtyforty/Desktop/ThirtyFourtyDocker/ls_metrics_allstat/GN_hexagon_stat/hexagon_by_regions_gi.xlsx"
+bgi_fragmentation_data <- read.xlsx(file_path, sheet = "bgi_fragmentation")
+
+# Check the structure of the loaded data
+str(bgi_fragmentation_data)
+
+# Access and summarize the "frag_norm" column
+frag_column <- bgi_fragmentation_data[["frag_norm"]]
+str(frag_column)
+summary(frag_column)
+
+# Calculate and print the median GI Fragmentation by county
+median_frag_by_county <- bgi_fragmentation_data %>%
+  group_by(county) %>%
+  summarise(median_frag_norm = median(frag_norm, na.rm = TRUE))
+print(median_frag_by_county)
+
+# Modify region names
+bgi_fragmentation_data$county <- gsub(" maakond", "", bgi_fragmentation_data$county)
+median_frag_by_county$county <- gsub(" maakond", "", median_frag_by_county$county)
+
+# Create a boxplot with median values annotated
+ggplot(bgi_fragmentation_data, aes(x = county, y = frag_norm)) +
+  geom_boxplot(fill = "#FF9999", outlier.shape = NA, alpha = 0.7) +  # Light red fill with opacity
+  geom_text(data = median_frag_by_county, aes(label = median_frag_norm, y = median_frag_norm, group = county), 
+            position = position_dodge(width = 0.75), vjust = -0.5, size = 3) +
+  labs(x = "Regions", y = "Normalised GI Fragmentation",
+       title = "Comparison of Normalised GI Fragmentation by Region") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")  # Rotating x-axis labels and removing the legend
+
+# Create a histogram for GI Fragmentation data
+ggplot(bgi_fragmentation_data, aes(x = frag_norm)) +
+  geom_histogram(binwidth = 0.02, fill = "skyblue", color = "black") +
+  labs(x = "Normalized GI Fragmentation", y = "Frequency") +
+  ggtitle("Distribution of Normalized GI Fragmentation") +
+  xlim(0, 1) +
+  ylim(0, 1500)
+
+# Perform the Kruskal-Wallis test
+gi_kruskal_test_result <- kruskal.test(frag_norm ~ county, data = bgi_fragmentation_data)
+print(gi_kruskal_test_result)
+
+# Convert the 'county' variable to a factor
+bgi_fragmentation_data$county <- factor(bgi_fragmentation_data$county)
+
+# Conduct the Dunn test (post hoc analysis) with Bonferroni correction
+gi_posthoc_dunn_result <- dunnTest(bgi_fragmentation_data$frag_norm, g = bgi_fragmentation_data$county, method = "bonferroni")
+print(gi_posthoc_dunn_result)
+summary(gi_posthoc_dunn_result)
+
+# Prepare data for heatmap
+plot_gi_data <- data.frame(
+  Comparison = gi_posthoc_dunn_result$res$Comparison,
+  z_score = gi_posthoc_dunn_result$res$Z,
+  p_adj = gi_posthoc_dunn_result$res$P.adj
+)
+
+# Process data for heatmap
+plot_gi_data <- plot_gi_data %>%
+  separate(Comparison, into = c("Region1", "Region2"), sep = " - ") %>%
+  mutate(
+    significance = case_when(
+      p_adj < 0.05 & z_score > 0  ~ "Significant Positive",
+      p_adj < 0.05 & z_score < 0  ~ "Significant Negative",
+      TRUE                        ~ "Not Significant"
+    ),
+    significance_label = case_when(
+      p_adj < 0.001 ~ "***",
+      p_adj < 0.01  ~ "**",
+      p_adj < 0.05  ~ "*",
+      TRUE          ~ ""
+    ),
+    abs_z_score = ifelse(significance != "Not Significant", abs(z_score), NA)
+  )
+
+# Modify regions names
+plot_gi_data$Region1 <- gsub(" maakond", "", plot_gi_data$Region1)
+plot_gi_data$Region2 <- gsub(" maakond", "", plot_gi_data$Region2)
+
+# Create heatmap for GI Fragmentation data
+ggplot(plot_gi_data, aes(x = Region2, y = Region1)) +
+  geom_tile(aes(fill = abs_z_score), color = "white", alpha = 0.5) +
+  scale_fill_gradient(low = "lightblue", high = "darkred", na.value = "white", guide = "none") +
+  geom_text(aes(label = paste0(sprintf("%.2f", z_score), significance_label)), color = "black", size = 3) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_text(angle = 45, hjust = 1)) +
+  labs(
+    title = "Z-Scores Heatmap of GI Fragmentation",
+    caption = "Color Scheme: Z-Score Intensity\n\nP-Values Legend:\n* <- 0.05\n** <- 0.01\n*** <- below 0.01"
+  )
+
+# Read the Excel file containing the Cumulative data
+file_path <- "/Users/thirtyforty/Desktop/ThirtyFourtyDocker/ls_metrics_allstat/GN_hexagon_stat/hexagon_by_regions_gi.xlsx"
+cumulative_data <- read.xlsx(file_path, sheet = "cumulative")
+
+# Check the structure of the loaded data
+str(cumulative_data)
+
+# Access and summarize the "cum_norm" column
+cum_column <- cumulative_data[["cum_norm"]]
+str(cum_column)
+summary(cum_column)
+
+# Calculate and print the median Cumulative Impact by county
+median_cum_by_county <- cumulative_data %>%
+  group_by(county) %>%
+  summarise(median_cum_norm = median(cum_norm, na.rm = TRUE))
+print(median_cum_by_county)
+
+# Modify the Region1 and Region2 Columns
+cumulative_data$county <- gsub(" maakond", "", cumulative_data$county)
+median_cum_by_county$county <- gsub(" maakond", "", median_cum_by_county$county)
+
+# Create a boxplot for cumulative data with median values annotated
+ggplot(cumulative_data, aes(x = county, y = cum_norm)) +
+  geom_boxplot(fill = "#FF9999", outlier.shape = NA, alpha = 0.7) +  # Light red fill with opacity
+  geom_text(data = median_cum_by_county, aes(label = median_cum_norm, y = median_cum_norm, group = county), 
+            position = position_dodge(width = 0.75), vjust = -0.5, size = 3) +
+  labs(x = "Regions", y = "Normalised Cumulative Impact",
+       title = "Comparison of Normalised Cumulative Impact by Region") +
+  coord_cartesian(ylim = c(0, 1)) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")  # Rotating x-axis labels and removing the legend
+
+
+# Create a histogram for Cumulative Impact data
+ggplot(cumulative_data, aes(x = cum_norm)) +
+  geom_histogram(binwidth = 0.02, fill = "skyblue", color = "black") +
+  labs(x = "Normalized Cumulative Impact", y = "Frequency") +
+  ggtitle("Distribution of Normalized Cumulative Impact") +
+  theme_minimal()
+
+# Perform the Kruskal-Wallis test
+cum_kruskal_test_result <- kruskal.test(cum_norm ~ county, data = cumulative_data)
+print(cum_kruskal_test_result)
+
+# Convert the 'county' variable to a factor
+cumulative_data$county <- factor(cumulative_data$county)
+
+# Conduct the Dunn test (post hoc analysis) with Bonferroni correction
+cum_posthoc_dunn_result <- dunnTest(cumulative_data$cum_norm, g = cumulative_data$county, method = "bonferroni")
+print(cum_posthoc_dunn_result)
+summary(cum_posthoc_dunn_result)
+
+# Prepare data for heatmap
+plot_cum_data <- data.frame(
+  Comparison = cum_posthoc_dunn_result$res$Comparison,
+  z_score = cum_posthoc_dunn_result$res$Z,
+  p_adj = cum_posthoc_dunn_result$res$P.adj
+)
+
+# Process data for heatmap
+plot_cum_data <- plot_cum_data %>%
+  separate(Comparison, into = c("Region1", "Region2"), sep = " - ") %>%
+  mutate(
+    significance = case_when(
+      p_adj < 0.05 & z_score > 0  ~ "Significant Positive",
+      p_adj < 0.05 & z_score < 0  ~ "Significant Negative",
+      TRUE                        ~ "Not Significant"
+    ),
+    significance_label = case_when(
+      p_adj < 0.001 ~ "***",
+      p_adj < 0.01  ~ "**",
+      p_adj < 0.05  ~ "*",
+      TRUE          ~ ""
+    ),
+    abs_z_score = ifelse(significance != "Not Significant", abs(z_score), NA)
+  )
+
+# Modify names
+plot_cum_data$Region1 <- gsub(" maakond", "", plot_cum_data$Region1)
+plot_cum_data$Region2 <- gsub(" maakond", "", plot_cum_data$Region2)
+
+# Create heatmap for Cumulative Impact data
+ggplot(plot_cum_data, aes(x = Region2, y = Region1)) +
+  geom_tile(aes(fill = abs_z_score), color = "white", alpha = 0.5) +
+  scale_fill_gradient(low = "lightblue", high = "darkred", na.value = "white", guide = "none") +
+  geom_text(aes(label = paste0(sprintf("%.2f", z_score), significance_label)), color = "black", size = 3) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_text(angle = 45, hjust = 1)) +
+  labs(
+    title = "Z-Scores Heatmap of Normalised Cumulative Impact",
+    caption = "Color Scheme: Z-Score Intensity\n\nP-Values Legend:\n* <- 0.05\n** <- 0.01\n*** <- below 0.01"
+  )
+
+#increased readability of the text
+
+ggplot(cumulative_data, aes(x = county, y = cum_norm)) +
+  geom_boxplot(fill = "#FF9999", outlier.shape = NA, alpha = 0.7) +  # Light red fill with opacity
+  geom_text(data = median_cum_by_county, aes(label = median_cum_norm, y = median_cum_norm, group = county), 
+            position = position_dodge(width = 0.75), vjust = -0.5, size = 5) +  # Increased text size
+  labs(x = "Regions", y = "Normalised Cumulative Impact",
+       title = "Comparison of Normalised Cumulative Impact by County") +
+  coord_cartesian(ylim = c(0, 1)) +
+  theme_minimal(base_size = 15) +  # Increased base font size
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),  # Increased x-axis text size
+    axis.text.y = element_text(size = 12),  # Increased y-axis text size
+    legend.position = "none",  # Removing the legend
+    plot.title = element_text(size = 20),  # Increased title size
+    axis.title.x = element_text(size = 14),  # Increased x-axis title size
+    axis.title.y = element_text(size = 14)   # Increased y-axis title size
+  )
+
+
+ggplot(plot_cum_data, aes(x = Region2, y = Region1)) +
+  geom_tile(aes(fill = abs_z_score), color = "white", alpha = 0.5) +
+  scale_fill_gradient(low = "lightblue", high = "darkred", na.value = "white", guide = "none") +
+  geom_text(aes(label = paste0(sprintf("%.2f", z_score), significance_label)), color = "black", size = 5) +  # Increased text size
+  theme_minimal(base_size = 15) +  # Increased base font size
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),  # Increased x-axis text size
+    axis.text.y = element_text(angle = 45, hjust = 1, size = 12),  # Increased y-axis text size
+    plot.title = element_text(size = 20),  # Increased title size
+    plot.caption = element_text(size = 14),  # Increased caption size
+    axis.title.x = element_text(size = 14),  # Increased x-axis title size
+    axis.title.y = element_text(size = 14)   # Increased y-axis title size
+  ) +
+  labs(
+    title = "Z-Scores Heatmap of Normalised Cumulative Impact",
+    caption = "Color Scheme: Z-Score Intensity\n\nP-Values Legend:\n* <- 0.05\n** <- 0.01\n*** <- below 0.01"
+  )
