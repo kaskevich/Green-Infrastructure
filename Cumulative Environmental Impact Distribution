@@ -1,0 +1,170 @@
+library(sf)
+library(sfdep)
+library(spdep)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# Read in the data from the shapefile
+data_path <- "/Users/thirtyforty/Desktop/BGI_DP/hexagon_analysis_hotspots.shp"
+hex_data <- st_read(data_path)
+
+# Visualize the first few rows of the dataset
+head(hex_data)
+names(hex_data)
+
+class(hex_data$value_interest)
+
+# Visualize the variable of impacts as a histogram
+hist(hex_data$cum_norm, 
+     main = "Distribution of Cumulative Impact (cum_norm)", 
+     xlab = "Cumulative Impact Value", 
+     ylab = "Frequency",
+     col = "lightblue", 
+     border = "black")
+
+# Plot the hexagons with colors representing cum_norm values
+ggplot(data = hex_data) + 
+  geom_sf(aes(fill = cum_norm)) +
+  scale_fill_viridis_c() +
+  theme_minimal() +
+  labs(title = "Spatial Distribution of Cumulative Impact",
+       fill = "Cumulative Impact Value")
+
+filtered_hex_data <- hex_data[hex_data$cum_norm > 0, ]
+ggplot(data = filtered_hex_data) + 
+  geom_sf(aes(fill = cum_norm)) +
+  scale_fill_viridis_c() +
+  theme_minimal() +
+  labs(title = "Spatial Distribution of Cumulative Impact",
+       fill = "Cumulative Impact Value")
+
+library(RColorBrewer)
+
+# Define the color scale
+color_scale <- scale_fill_gradientn(colors = brewer.pal(9, "YlOrRd"))
+
+# Plot
+ggplot(data = hex_data) + 
+  geom_sf(aes(fill = cum_norm)) + 
+  color_scale +
+  theme_minimal() +
+  labs(title = "Spatial Distribution of Cumulative Impact",
+       fill = "Cumulative Impact Value")
+
+# Create a list of neighbors for each hexagon using queen contiguity
+list_nb <- poly2nb(hex_data, queen = TRUE)
+
+# Compute the Getis-Ord Global G statistic
+globalG.result <- globalG.test(hex_subset$cum_norm, listw)
+print(globalG.result)
+
+#Check for and remove polygons with empty neighbor sets
+empty_nb <- which(card(list_nb) == 0)
+hex_subset <- hex_data[-empty_nb, ]
+
+# Recompute neighbors and weights after removing empty neighbors
+hex_nb <- poly2nb(hex_subset, queen = TRUE)
+hex_w_binary <- nb2listw(hex_nb, style="B")
+
+# Calculate spatial lag of the variable of interest
+hex_lag <- lag.listw(hex_w_binary, hex_subset$cum_norm)
+
+# Test for global G statistic
+globalG.result <- globalG.test(hex_subset$cum_norm, hex_w_binary)
+print(globalG.result)
+
+# Calculate the Local Getis-Ord statistic
+localG.values <- localG(hex_subset$cum_norm, hex_w_binary)
+hex_subset$localG <- localG.values
+
+
+# Interpret and classify the results. Classify hotspots and coldspots based on local G values
+hex_subset$classification <- ifelse(
+  hex_subset$localG > 1.96, "Hotspot",
+  ifelse(hex_subset$localG < -1.96, "Coldspot", "Not Significant")
+)
+
+# Create a color palette for the classifications
+impact_colors <- c("Hotspot" = "red", "Coldspot" = "blue", "Not Significant" = "white")
+
+# Visualize in static ggplot
+hex_subset %>%
+  ggplot(aes(fill = classification)) +
+  geom_sf(color = NA) +  # This will remove the grey hexagon borders
+  scale_fill_manual(values = impact_colors, name = "Impact Classification") +
+  theme_minimal() +
+  labs(title = "Getis-Ord G Hotspot Analysis on Estonian Coastal BGI")
+
+# Visualize in an interactive map
+
+library(mapview)
+
+# Display the interactive map and extend custom color palette
+impact_colors <- c("Hotspot" = "red",
+                   "Coldspot" = "blue",
+                   "Not Significant" = "white")
+
+mapview(hex_subset, zcol = "classification", col.regions = impact_colors, legend = TRUE)
+
+#Create neighborhood object
+nb <- poly2nb(hex_subset)
+
+#Calculate weights
+listw <- nb2listw(nb, style="W")
+
+# Calculate local Moran's I statistic
+localMoran <- localmoran(hex_subset$cum_norm, listw)
+
+#add the results of local Moran's I back to hex_subset
+hex_subset$localMoran <- localMoran[,1]
+hex_subset$p_value <- localMoran[,5]
+
+# Use the custom palette in your ggplot visualization
+hex_subset %>%
+  mutate(
+    classification = case_when(
+      localMoran > 0 & p_value <= 0.01 ~ "Very High Impact",
+      localMoran > 0 & p_value <= 0.05 ~ "High Impact",
+      localMoran > 0 & p_value <= 0.1  ~ "Moderate Impact",
+      localMoran < 0 & p_value <= 0.01 ~ "Very Low Impact",
+      localMoran < 0 & p_value <= 0.05 ~ "Low Impact",
+      localMoran < 0 & p_value <= 0.1  ~ "Slightly Low Impact",
+      TRUE ~ "Neutral Impact"
+    ),
+    classification = factor(
+      classification,
+      levels = names(impact_colors)
+    )
+  ) %>%
+  ggplot(aes(fill = classification)) +
+  geom_sf(color = NA) +  # This removes the hexagon borders
+  scale_fill_manual(values = impact_colors, name = "Impact Classification") +
+  theme_void() +
+  labs(title = "Impact Analysis on Estonian Coastal BGI")
+
+# Convert 'classification' to factor with specific levels
+hex_subset$classification <- factor(hex_subset$classification, levels = c(
+  "Very High Impact", 
+  "High Impact", 
+  "Moderate Impact",
+  "Neutral Impact",
+  "Slightly Low Impact", 
+  "Low Impact", 
+  "Very Low Impact"
+))
+
+# Define the color palette again
+impact_colors <- c(
+  "Very High Impact" = "darkred",
+  "High Impact" = "red",
+  "Moderate Impact" = "lightcoral",
+  "Neutral Impact" = NA,
+  "Slightly Low Impact" = "lightblue",
+  "Low Impact" = "blue",
+  "Very Low Impact" = "darkblue"
+)
+
+# Visualize with mapview
+mapview(hex_subset, zcol = "classification", col.regions = impact_colors, lwd = 0)
+
